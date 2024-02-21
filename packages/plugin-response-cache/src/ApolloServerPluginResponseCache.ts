@@ -111,6 +111,12 @@ export interface ApolloServerPluginResponseCacheOptions<
     requestContext: GraphQLRequestContext<Record<string, any>>,
     keyData: unknown,
   ): string;
+
+  // If this hook is defined and set as true all extensions will be included in
+  // the cache. Alternatively return a function which picks the extensions to cache.
+  storeExtensions?(
+    requestContext: GraphQLRequestContext<TContext>,
+  ): Promise<any>;
 }
 
 enum SessionMode {
@@ -159,6 +165,7 @@ interface CacheValue {
   data: Record<string, any>;
   cachePolicy: Required<CacheHint>;
   cacheTime: number; // epoch millis, used to calculate Age header
+  extensions?: Record<string, any>;
 }
 
 function isGraphQLQuery(requestContext: GraphQLRequestContext<any>) {
@@ -218,7 +225,13 @@ export default function plugin<TContext extends BaseContext>(
             requestContext.metrics.responseCacheHit = true;
             age = Math.round((+new Date() - value.cacheTime) / 1000);
             return {
-              body: { kind: 'single', singleResult: { data: value.data } },
+              body: {
+                kind: 'single',
+                singleResult: {
+                  data: value.data,
+                  ...(value.extensions && { extensions: value.extensions }),
+                },
+              },
               http: {
                 status: undefined,
                 headers: new HeaderMap(),
@@ -295,6 +308,16 @@ export default function plugin<TContext extends BaseContext>(
             if (!shouldWriteToCache) return;
           }
 
+          let extensions: any;
+
+          if (options.storeExtensions) {
+            if (typeof options.storeExtensions === 'function') {
+              extensions = await options.storeExtensions(requestContext);
+            } else {
+              extensions = requestContext.response.body.singleResult.extensions;
+            }
+          }
+
           const { data, errors } = requestContext.response.body.singleResult;
           const policyIfCacheable =
             requestContext.overallCachePolicy.policyIfCacheable();
@@ -337,7 +360,9 @@ export default function plugin<TContext extends BaseContext>(
               data,
               cachePolicy: policyIfCacheable,
               cacheTime: +new Date(),
+              ...(extensions && { extensions }),
             };
+
             const serializedValue = JSON.stringify(value);
             // Note that this function converts key and response to strings before
             // doing anything asynchronous, so it can run in parallel with user code
